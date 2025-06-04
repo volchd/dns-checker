@@ -1,0 +1,22 @@
+{
+  "name": "dns-checker",
+  "version": "1.0.0",
+  "description": "A Cloudflare Worker for checking email authentication records",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "tsc",
+    "start": "wrangler dev",
+    "test": "vitest run --coverage"
+  },
+  "type": "module",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240318.0",
+    "@vitest/coverage-v8": "^1.6.0",
+    "typescript": "^5.0.0",
+    "vitest": "^1.6.0",
+    "vitest-environment-miniflare": "^2.14.4",
+    "wrangler": "^3.0.0"
+  }
+}
