@@ -1,0 +1,37 @@
+# Node.js dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Local environment settings
+.env
+.env.*
+
+# Log files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editor directories and settings
+.vscode/
+.idea/
+.DS_Store
+
+# Test coverage
+coverage/
+
+# Cloudflare Wrangler output
+wrangler.log
+.wrangler/
+# OS generated files
+Thumbs.db
+
+# Misc
+*.local
+*.swp
+
+# Ignore lock files if you prefer (uncomment if needed)
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
