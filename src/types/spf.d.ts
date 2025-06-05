@@ -19,7 +19,7 @@ export interface SPFRecord {
   raw: string;
   version: string;
   mechanisms: {
-    all: string;
+    all: string | null;
     ip4: string[];
     ip6: string[];
     a: string[];

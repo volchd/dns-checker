@@ -214,28 +214,38 @@ export async function validateSPF(
     }
     
     // Process redirect (only if we haven't hit the include limit)
+    let hasEffectiveRedirect = false;
     if (result.isValid && parsedRecord.mechanisms.redirect) {
       try {
         if (includeCount >= MAX_INCLUDES) {
           result.errors.push(`Maximum number of includes/redirects (${MAX_INCLUDES}) reached`);
           result.isValid = false;
         } else {
+          const redirectDomain = parsedRecord.mechanisms.redirect;
           const redirectResult = await validateSPF(
-            parsedRecord.mechanisms.redirect, 
-            depth + 1, 
+            redirectDomain,
+            depth + 1,
             currentDomains,
             includeCount + 1
           );
-          
+
           result.redirects.push({
-            domain: parsedRecord.mechanisms.redirect,
+            domain: redirectDomain,
             result: redirectResult
           });
           result.dnsLookupCount += redirectResult.dnsLookupCount;
-          
+
+          // If the redirect target itself is invalid (e.g., syntax error, too many lookups in its own chain),
+          // then the current record that redirects to it is also considered to have an invalid SPF setup in terms of policy enforcement.
           if (!redirectResult.isValid) {
-            result.errors.push(`Redirect to ${parsedRecord.mechanisms.redirect} failed validation`);
-            result.isValid = false;
+            result.errors.push(`Redirect to ${redirectDomain} failed validation (target record invalid or led to error)`);
+            result.isValid = false; // Mark current result as invalid due to redirect failure
+          } else {
+            // If redirect is structurally valid and its record is valid, its 'all' mechanism is the effective one.
+            // The recursive call to validateSPF ensures redirectResult.allMechanisms itself contains only the 'all' string.
+            result.allMechanisms = [...redirectResult.allMechanisms]; // Propagate the 'all' mechanism from the redirect target
+            hasEffectiveRedirect = true;
+            result.warnings.push(...redirectResult.warnings.map(w => `Redirect (${redirectDomain}): ${w}`));
           }
         }
       } catch (error) {
@@ -245,18 +255,16 @@ export async function validateSPF(
       }
     }
 
-    // 5. Collect all mechanisms for reference
-    result.allMechanisms = [
-      ...parsedRecord.mechanisms.ip4.map(ip => `ip4:${ip}`),
-      ...parsedRecord.mechanisms.ip6.map(ip => `ip6:${ip}`),
-      ...parsedRecord.mechanisms.a.map(a => `a:${a}`),
-      ...parsedRecord.mechanisms.mx.map(mx => `mx:${mx}`),
-      ...parsedRecord.mechanisms.include.map(inc => `include:${inc}`),
-      ...parsedRecord.mechanisms.exists.map(ex => `exists:${ex}`),
-      ...(parsedRecord.mechanisms.redirect ? [`redirect=${parsedRecord.mechanisms.redirect}`] : []),
-      ...(parsedRecord.mechanisms.exp ? [`exp=${parsedRecord.mechanisms.exp}`] : []),
-      `all:${parsedRecord.mechanisms.all}`
-    ];
+    // 5. Set the 'allMechanisms' to be ONLY the effective 'all' string.
+    if (!hasEffectiveRedirect) {
+      // If there was no effective redirect, use the 'all' mechanism from the current record.
+      if (parsedRecord.mechanisms.all) {
+        result.allMechanisms = [parsedRecord.mechanisms.all];
+      } else {
+        result.allMechanisms = []; // No 'all' mechanism found in this record and no redirect
+      }
+    }
+    // If hasEffectiveRedirect is true, result.allMechanisms was already set from redirectResult.allMechanisms.
 
         return result;
       })(),
@@ -291,7 +299,7 @@ function parseSPFRecord(record: string): SPFRecord | null {
     raw: record,
     version: SPF_PREFIX,
     mechanisms: {
-      all: '~all', // Default to softfail
+      all: null, // Default to null, explicitly set if found
       ip4: [],
       ip6: [],
       a: [],
@@ -304,109 +312,97 @@ function parseSPFRecord(record: string): SPFRecord | null {
     modifiers: {}
   };
 
-  // Remove the version prefix and split into parts
   const parts = record
     .substring(SPF_PREFIX.length)
     .trim()
     .split(/\s+/)
-    .filter(part => part.trim() !== ''); // Remove empty parts
+    .filter(part => part.trim() !== '');
 
   for (const part of parts) {
     if (!part) continue;
 
     try {
-      // Handle mechanisms
-      const mechanismMatch = part.match(/^([a-z0-9]+)[:=]?(.*)$/i);
-      if (!mechanismMatch) continue;
+      const mechanismMatch = part.match(/^([+~?-]?)([a-zA-Z0-9._-]+)(?:[:=](.+))?$/);
 
-      const [_, type, value] = mechanismMatch;
-      const lowerType = type.toLowerCase();
+      if (!mechanismMatch) {
+        if (part.includes('=') && !part.toLowerCase().startsWith('exp=')) {
+            const [key, val] = part.split('=');
+            const cleanKey = key?.trim().toLowerCase();
+            const cleanVal = val?.trim();
+            if (cleanKey && cleanVal) {
+                result.modifiers[cleanKey] = cleanVal;
+            }
+        }
+        continue;
+      }
+
+      const [_, qualifier, type, value] = mechanismMatch;
+      const mechName = type.toLowerCase();
       const cleanValue = value ? value.trim() : '';
 
-      switch (lowerType) {
+      switch (mechName) {
         case 'all':
-          result.mechanisms.all = ['~all', '?all', '-all', '+all'].includes(cleanValue) 
-            ? cleanValue 
-            : '~all';
+          result.mechanisms.all = (qualifier || '+') + 'all';
           break;
-          
+
         case 'ip4':
           if (cleanValue && isValidIPv4(cleanValue)) {
             result.mechanisms.ip4.push(cleanValue);
           }
           break;
-          
+
         case 'ip6':
           if (cleanValue && isValidIPv6(cleanValue)) {
             result.mechanisms.ip6.push(cleanValue);
           }
           break;
-          
+
         case 'a':
         case 'mx':
-          const domain = cleanValue.split('/')[0]; // Handle CIDR notation
-          if (!domain || isValidDomain(domain)) {
-            result.mechanisms[lowerType].push(cleanValue || '');
+          const domainSpecForAMx: string = cleanValue.split('/')[0];
+          if (!domainSpecForAMx || isValidDomain(domainSpecForAMx)) {
+            result.mechanisms[mechName].push(cleanValue || ''); // Store the full value (e.g., domain or domain/cidr)
           }
           break;
-          
+
         case 'include':
         case 'exists':
           if (cleanValue) {
-            const domain = cleanValue.split('/')[0];
-            if (isValidDomain(domain)) {
-              if (domain.length <= MAX_MECHANISM_LENGTH) {
-                result.mechanisms[lowerType].push(cleanValue);
-              } else {
-                console.warn(`Skipping ${lowerType} with domain exceeding maximum length: ${domain}`);
+            const domainSpecForIncludeExists: string = cleanValue.split('/')[0];
+            if (isValidDomain(domainSpecForIncludeExists)) {
+              if (domainSpecForIncludeExists.length <= MAX_MECHANISM_LENGTH) {
+                result.mechanisms[mechName].push(cleanValue);
               }
             }
           }
           break;
-          
+
         case 'redirect':
           if (cleanValue) {
-            const domain = cleanValue.split('/')[0];
-            if (isValidDomain(domain)) {
-              if (domain.length <= MAX_MECHANISM_LENGTH) {
+            const domainSpecForRedirect: string = cleanValue.split('/')[0];
+            if (isValidDomain(domainSpecForRedirect)) {
+              if (domainSpecForRedirect.length <= MAX_MECHANISM_LENGTH) {
                 result.mechanisms.redirect = cleanValue;
-              } else {
-                console.warn(`Skipping redirect with domain exceeding maximum length: ${domain}`);
               }
             }
           }
           break;
-          
+
         case 'exp':
           if (cleanValue) {
-            result.mechanisms.exp = cleanValue;
+            result.mechanisms.exp = cleanValue; // Store only the value for exp mechanism
           }
           break;
-          
+
         default:
-          // Handle modifiers (key=value)
-          if (part.includes('=')) {
-            const [key, val] = part.split('=');
-            const cleanKey = key?.trim();
-            const cleanVal = val?.trim();
-            
-            if (cleanKey && cleanVal) {
-              // Additional validation for specific modifiers
-              if (cleanKey === 'exp') {
-                result.modifiers.exp = cleanVal;
-              } else {
-                result.modifiers[cleanKey] = cleanVal;
-              }
-            }
-          }
+          // console.warn(`Unknown or unhandled SPF mechanism part: ${part}`);
+          break;
       }
     } catch (error) {
-      // Skip malformed parts but continue processing
-      console.warn(`Skipping malformed SPF part: ${part}`, error);
+      console.warn(`Error parsing SPF part: ${part}`, error);
       continue;
     }
   }
-
   return result;
 }
 
