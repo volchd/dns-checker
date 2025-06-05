@@ -30,12 +30,18 @@ A Cloudflare Worker that checks email authentication records (SPF, DKIM, DMARC, 
    npm install
    ```
 
-3. Authenticate with Cloudflare:
+3. Configure environment variables:
+   ```bash
+   cp .env.example .env
+   ```
+   Edit `.env` file with your settings if needed.
+
+4. Authenticate with Cloudflare:
    ```bash
    npx wrangler login
    ```
 
-4. Start the development server:
+5. Start the development server:
    ```bash
    npm run dev
    ```
@@ -55,32 +61,83 @@ GET /?domain=example.com
 ```json
 {
   "domain": "example.com",
-  "timestamp": "2024-06-03T12:00:00.000Z",
+  "timestamp": "2024-01-15T10:30:00.000Z",
+  "score": {
+    "total": 65,
+    "max": 100,
+    "grade": "C",
+    "summary": "Basic email security configured but improvements needed"
+  },
   "checks": {
     "spf": {
       "valid": true,
-      "record": "v=spf1 include:_spf.google.com ~all"
+      "record": "v=spf1 ip4:192.0.2.0/24 include:_spf.google.com -all",
+      "policy": "hard fail",
+      "includes": ["_spf.google.com"],
+      "mechanisms": ["ip4:192.0.2.0/24", "include:_spf.google.com", "-all"],
+      "score": {
+        "value": 25,
+        "max": 25,
+        "details": ["Hard fail policy (+15)", "No ip4:any or +all (+10)"]
+      }
     },
     "dmarc": {
-      "valid": true,
-      "record": "v=DMARC1; p=none; rua=mailto:dmarc-reports@example.com;",
-      "policy": "none"
+      "valid": false,
+      "record": null,
+      "error": "No DMARC record found",
+      "score": {
+        "value": 0,
+        "max": 35,
+        "details": ["No DMARC record (-35)"]
+      }
     },
     "dkim": {
-      "valid": true,
-      "selector": "google",
-      "publicKey": "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA..."
+      "valid": null,
+      "error": "Selector required",
+      "selectors_checked": ["default", "google"],
+      "score": {
+        "value": 0,
+        "max": 20,
+        "details": ["DKIM not configured (-20)"]
+      }
     },
     "mta_sts": {
       "valid": true,
-      "record": "v=STSv1; id=20240101",
-      "mode": "testing",
-      "mx": ["mx1.example.com", "mx2.example.com"]
+      "dns_record": "v=STSv1; id=20240115000000Z",
+      "policy": {
+        "version": "STSv1",
+        "mode": "enforce",
+        "max_age": 604800,
+        "mx": ["*.google.com"]
+      },
+     "score": {
+    "total": 55,
+    "spf": 20,
+    "dkim": 0,
+    "dmarc": 30,
+    "details": {
+      "spf_exists": 10,
+      "spf_syntax": 5,
+      "spf_all": 0,
+      "spf_no_plusall": 5,
+      "dkim_exists": 0,
+      "dkim_key_strength": 0,
+      "dkim_multiple_selectors_bonus": 0,
+      "dmarc_exists": 10,
+      "dmarc_policy": 20,
+      "dmarc_rua_bonus": 5
     },
-    "tls_rpt": {
-      "valid": true,
-      "record": "v=TLSRPTv1; rua=mailto:tls-reports@example.com",
-      "rua": ["mailto:tls-reports@example.com"]
+    "reasons": {
+      "spf": "SPF record does not specify an \"all\" mechanism.",
+      "dkim": "DKIM record is missing or invalid.",
+      "dmarc": "DMARC reporting (rua) is enabled."
+    },
+    "recommendations": {
+      "spf": "Add an \"all\" mechanism (preferably \"-all\") to define policy for all mail sources.",
+      "dkim": "Add a valid DKIM record with at least 1024-bit key and enable key rotation if possible.",
+      "dmarc": "No change needed. Reporting is recommended."
+    }
+  }
     }
   }
 }
@@ -88,17 +145,57 @@ GET /?domain=example.com
 
 ## Deployment
 
-1. Build the project:
+1. Configure your production environment:
+   ```bash
+   npx wrangler init
+   ```
+
+2. Build the project:
    ```bash
    npm run build
    ```
 
-2. Deploy to Cloudflare Workers:
+3. Test the build:
+   ```bash
+   npm run test
+   ```
+
+4. Deploy to Cloudflare Workers:
    ```bash
    npx wrangler deploy
    ```
 
-3. The worker will be deployed to `https://<worker-name>.<your-account>.workers.dev`
+5. The worker will be deployed to `https://<worker-name>.<your-account>.workers.dev`
+
+## Testing
+
+Run the test suite:
+```bash
+npm run test
+```
+
+Run tests in watch mode during development:
+```bash
+npm run test:watch
+```
+
+## Contributing
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+Please make sure to update tests as appropriate and follow the existing code style.
+
+## Environment Variables
+
+The following environment variables can be configured:
+
+- `ALLOWED_ORIGINS` - Comma-separated list of allowed CORS origins
+- `MAX_REQUESTS_PER_MIN` - Rate limit per IP (default: 60)
+- `CACHE_TTL` - DNS cache TTL in seconds (default: 300)
 
 ## Error Handling
 
