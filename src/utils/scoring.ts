@@ -228,7 +228,22 @@ export function calculateScore(result: EmailAuthResult): ScoreBreakdown {
   }
 
   // ----- Total and rating thresholds -----
-  total = spfScore + dkimScore + dmarcScore + bonusScore;
+  // Calculate final scores by summing up details
+  spfScore = (details['spf_exists'] || 0) + 
+             (details['spf_syntax'] || 0) + 
+             (details['spf_all'] || 0) + 
+             (details['spf_no_plusall'] || 0);
+
+  dkimScore = (details['dkim_exists'] || 0) + 
+              (details['dkim_key_strength'] || 0) + 
+              (details['dkim_multiple_selectors_bonus'] || 0);  // Include bonus in dkim score
+
+  dmarcScore = (details['dmarc_exists'] || 0) + 
+               (details['dmarc_policy'] || 0) + 
+               (details['dmarc_rua_bonus'] || 0);  // Include bonus in dmarc score
+
+  // Calculate total (no separate bonus score needed)
+  total = spfScore + dkimScore + dmarcScore;
 
   return {
     total,
